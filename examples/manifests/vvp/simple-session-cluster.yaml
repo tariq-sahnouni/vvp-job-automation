@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: SessionCluster
+metadata:
+  name: simple-session-cluster
+  labels:
+    managed-by: flink-deployment-sync
+spec:
+  state: STOPPED
+  deploymentTargetName: local-vvp-target
+  flinkVersion: 1.20.1
+  flinkImageRegistry: docker.io
+  flinkImageRepository: library/flink
+  flinkImageTag: "1.20"
+  numberOfTaskManagers: 1
+  resources:
+    jobmanager:
+      cpu: 0.25
+      memory: 1000m
+    taskmanager:
+      cpu: 0.25
+      memory: 1000m
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "1"
+    jobmanager.memory.process.size: 1000m
+    taskmanager.memory.process.size: 1000m
+    pekko.startup-timeout: 120s
+    akka.startup-timeout: 120s
+  kubernetes:
+    jobManagerPodTemplate:
+      spec:
+        initContainers:
+          - name: prepare-flink-home
+            image: flink:1.20
+            command:
+              - sh
+              - -lc
+              - |
+                cp -a /opt/flink/. /vvp-flink-home/
+                mkdir -p /vvp-flink-home/plugins/flink-s3-fs-hadoop
+                cp /vvp-flink-home/opt/flink-s3-fs-hadoop-1.20.5.jar /vvp-flink-home/plugins/flink-s3-fs-hadoop/
+            volumeMounts:
+              - name: vvp-flink-home
+                mountPath: /vvp-flink-home
+        containers:
+          - name: flink-jobmanager
+            command:
+              - sh
+              - -lc
+              - exec "$@"
+              - --
+            env:
+              - name: FLINK_HOME
+                value: /flink
+              - name: PATH
+                value: /flink/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            volumeMounts:
+              - name: vvp-flink-home
+                mountPath: /flink
+        volumes:
+          - name: vvp-flink-home
+            emptyDir: {}
+    taskManagerPodTemplate:
+      spec:
+        initContainers:
+          - name: prepare-flink-home
+            image: flink:1.20
+            command:
+              - sh
+              - -lc
+              - |
+                cp -a /opt/flink/. /vvp-flink-home/
+                mkdir -p /vvp-flink-home/plugins/flink-s3-fs-hadoop
+                cp /vvp-flink-home/opt/flink-s3-fs-hadoop-1.20.5.jar /vvp-flink-home/plugins/flink-s3-fs-hadoop/
+            volumeMounts:
+              - name: vvp-flink-home
+                mountPath: /vvp-flink-home
+        containers:
+          - name: flink-taskmanager
+            command:
+              - sh
+              - -lc
+              - exec "$@"
+              - --
+            env:
+              - name: FLINK_HOME
+                value: /flink
+              - name: PATH
+                value: /flink/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+            volumeMounts:
+              - name: vvp-flink-home
+                mountPath: /flink
+        volumes:
+          - name: vvp-flink-home
+            emptyDir: {}
+  logging:
+    loggingProfile: default
+    log4jLoggers:
+      "": INFO

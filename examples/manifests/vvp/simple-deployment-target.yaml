@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: DeploymentTarget
+metadata:
+  name: local-vvp-target
+  labels:
+    managed-by: flink-deployment-sync
+spec:
+  kubernetes:
+    namespace: vvp
