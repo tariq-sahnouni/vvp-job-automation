@@ -1,0 +1,76 @@
+stages:
+  - validate
+  - test
+  - build
+  - operate
+
+default:
+  image: python:3.12-alpine
+  before_script:
+    - apk add --no-cache curl git
+    - pip install --no-cache-dir -r services/vvp-gitops-sync/requirements.txt
+
+validate-inventory:
+  stage: validate
+  script:
+    - ./scripts/vvp-validate-inventory.sh deployments
+
+validate-postgres-bootstrap:
+  stage: validate
+  script:
+    - python -c 'import pathlib,yaml; data=yaml.safe_load(pathlib.Path("platform/postgres-bootstrap/script-configmap.yaml").read_text()); pathlib.Path("/tmp/bootstrap.sh").write_text(data["data"]["bootstrap.sh"])'
+    - sh -n /tmp/bootstrap.sh
+    - python -c 'import pathlib,yaml; [yaml.safe_load(path.read_text()) for path in pathlib.Path("platform/postgres-bootstrap").glob("*.yaml")]'
+
+test-sync-service:
+  stage: test
+  script:
+    - python -m unittest discover -s services/vvp-gitops-sync/tests
+
+build-sync-service:
+  stage: build
+  image: docker:29-cli
+  services:
+    - name: docker:29-dind
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+  script:
+    - docker build -t "$CI_REGISTRY_IMAGE/vvp-gitops-sync:$CI_COMMIT_SHA" services/vvp-gitops-sync
+    - docker push "$CI_REGISTRY_IMAGE/vvp-gitops-sync:$CI_COMMIT_SHA"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - services/vvp-gitops-sync/**/*
+        - .gitlab-ci.yml
+
+vvp-preflight:
+  stage: operate
+  script:
+    - FLINK_LOAD_ENV_FILE=false ./scripts/vvp-preflight.sh
+  when: manual
+
+deploy-inventory:
+  stage: operate
+  script:
+    - |
+      find deployments -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) -print | sort |
+      while IFS= read -r definition; do
+        FLINK_LOAD_ENV_FILE=false ./scripts/vvp-deploy-application.sh "$definition"
+      done
+  environment:
+    name: vvp
+  when: manual
+
+cancel-deployment:
+  stage: operate
+  script:
+    - test -n "${DEPLOYMENT_NAME:-}" || { echo 'DEPLOYMENT_NAME is required'; exit 2; }
+    - FLINK_LOAD_ENV_FILE=false ./scripts/vvp-cancel-deployment.sh "$DEPLOYMENT_NAME"
+  when: manual
+
+delete-deployment:
+  stage: operate
+  script:
+    - test -n "${DEPLOYMENT_NAME:-}" || { echo 'DEPLOYMENT_NAME is required'; exit 2; }
+    - FLINK_LOAD_ENV_FILE=false VVP_CONFIRM_DELETE=true ./scripts/vvp-delete-deployment.sh "$DEPLOYMENT_NAME"
+  when: manual

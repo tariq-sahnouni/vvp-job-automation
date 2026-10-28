@@ -6,19 +6,15 @@ metadata:
     managed-by: flink-deployment-sync
 spec:
   state: RUNNING
-  deploymentTargetName: local-vvp-target
+  deploymentTargetName: ${VVP_DEPLOYMENT_TARGET_NAME}
   sessionClusterName: simple-session-cluster
   template:
     spec:
       artifact:
         kind: JAR
-        jarUri: http://minio.minio.svc.cluster.local:9000/flink-artifacts/simple-java-flink-job/simple-java-flink-job.jar
+        jarUri: ${S3_ARTIFACT_URI_PREFIX}/simple-java-flink-job.jar
         entryClass: com.example.flinkautomation.SimpleFlinkJob
       parallelism: 1
       flinkConfiguration:
-        state.checkpoints.dir: s3://flink-checkpoints/simple-java-flink-job-session
-        state.savepoints.dir: s3://flink-savepoints/simple-java-flink-job-session
-        s3.endpoint: http://minio.minio.svc.cluster.local:9000
-        s3.path.style.access: "true"
-        s3.access-key: minioadmin
-        s3.secret-key: minioadmin
+        state.checkpoints.dir: ${S3_CHECKPOINT_URI_PREFIX}/simple-java-flink-job-session
+        state.savepoints.dir: ${S3_SAVEPOINT_URI_PREFIX}/simple-java-flink-job-session

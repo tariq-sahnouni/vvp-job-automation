@@ -35,18 +35,20 @@ for line in text.splitlines():
 print("[ERROR] could not find metadata.name in manifest", file=sys.stderr); raise SystemExit(1)
 PY
 }
-curl_insecure_arg() { if [ "${VVP_INSECURE_TLS:-${FLINK_INSECURE_TLS:-false}}" = "true" ]; then printf -- '-k'; fi; }
-token_url() { if [ -n "${KEYCLOAK_TOKEN_URL:-}" ]; then printf '%s' "$KEYCLOAK_TOKEN_URL"; else printf '%s/realms/%s/protocol/openid-connect/token' "${KEYCLOAK_BASE_URL%/}" "$KEYCLOAK_REALM"; fi; }
-keycloak_token() { require_command curl; require_command python3; [ -n "${AUTH_ACCESS_TOKEN:-}" ] && { printf '%s' "$AUTH_ACCESS_TOKEN"; return; }; [ -n "${KEYCLOAK_BASE_URL:-${KEYCLOAK_TOKEN_URL:-}}" ] || fail "KEYCLOAK_BASE_URL or KEYCLOAK_TOKEN_URL is required"; [ -n "${KEYCLOAK_TOKEN_URL:-}" ] || [ -n "${KEYCLOAK_REALM:-}" ] || fail "KEYCLOAK_REALM is required"; [ -n "${KEYCLOAK_CLIENT_ID:-}" ] || fail "KEYCLOAK_CLIENT_ID is required"; [ -n "${KEYCLOAK_CLIENT_SECRET:-}" ] || fail "KEYCLOAK_CLIENT_SECRET is required"; : "${KEYCLOAK_GRANT_TYPE:=client_credentials}"; insecure_arg="$(curl_insecure_arg)"; response="$(curl -sS -f $insecure_arg --connect-timeout 10 --max-time "$VVP_REQUEST_TIMEOUT" -H "Accept: application/json" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "grant_type=$KEYCLOAK_GRANT_TYPE" --data-urlencode "client_id=$KEYCLOAK_CLIENT_ID" --data-urlencode "client_secret=$KEYCLOAK_CLIENT_SECRET" "$(token_url)")" || fail "failed to fetch Keycloak token"; TOKEN_RESPONSE="$response" python3 - <<'PY'
-import json, os, sys
-token = json.loads(os.environ["TOKEN_RESPONSE"]).get("access_token")
-if not token:
-    print("[ERROR] Keycloak response did not include access_token", file=sys.stderr)
-    raise SystemExit(1)
-print(token)
+render_manifest() { require_command python3; python3 - "$1" "$2" <<'PY'
+import os, re, sys
+from pathlib import Path
+source, target = map(Path, sys.argv[1:])
+def replace(match):
+    name = match.group(1)
+    if name not in os.environ:
+        raise SystemExit(f"[ERROR] {source} references unset environment variable {name}")
+    return os.environ[name]
+target.write_text(re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, source.read_text()), encoding="utf-8")
 PY
 }
-auth_header() { raw="${VVP_AUTH_PROVIDER:-${FLINK_AUTH_PROVIDER:-none}}"; case "$(printf '%s' "$raw" | tr '[:upper:]_' '[:lower:]-')" in none|no-auth|disabled|false) return 0 ;; bearer|token|static-bearer) token="${VVP_API_TOKEN:-${FLINK_API_TOKEN:-${AUTH_ACCESS_TOKEN:-}}}"; [ -n "$token" ] || fail "VVP_API_TOKEN or FLINK_API_TOKEN is required"; printf 'Authorization: Bearer %s' "$token" ;; keycloak|keycloak-client-credentials|oidc-keycloak) printf 'Authorization: Bearer %s' "$(keycloak_token)" ;; custom|command) [ -n "${VVP_AUTH_HEADER_COMMAND:-${FLINK_AUTH_HEADER_COMMAND:-}}" ] || fail "VVP_AUTH_HEADER_COMMAND or FLINK_AUTH_HEADER_COMMAND is required"; sh -c "${VVP_AUTH_HEADER_COMMAND:-$FLINK_AUTH_HEADER_COMMAND}" ;; *) fail "unsupported VVP_AUTH_PROVIDER/FLINK_AUTH_PROVIDER: $raw" ;; esac; }
+curl_insecure_arg() { if [ "${VVP_INSECURE_TLS:-${FLINK_INSECURE_TLS:-false}}" = "true" ]; then printf -- '-k'; fi; }
+auth_header() { if [ -n "${VVP_API_TOKEN:-}" ]; then printf "Authorization: Bearer %s" "$VVP_API_TOKEN"; fi; }
 vvp_request() { method="$1"; path="$2"; payload="${3:-}"; content_type="${4:-application/yaml}"; require_command curl; url="${VVP_BASE_URL%/}$path"; if [ "$VVP_DRY_RUN" = "true" ]; then log "DRY RUN $method $url"; [ -n "$payload" ] && log "DRY RUN payload: $payload"; return 0; fi; insecure_arg="$(curl_insecure_arg)"; header="$(auth_header)"; if [ -n "$payload" ]; then if [ -n "$header" ]; then curl -sS -f $insecure_arg --connect-timeout 10 --max-time "$VVP_REQUEST_TIMEOUT" -X "$method" -H "$header" -H "Accept: application/json" -H "Content-Type: $content_type" --data-binary "@$payload" "$url"; else curl -sS -f $insecure_arg --connect-timeout 10 --max-time "$VVP_REQUEST_TIMEOUT" -X "$method" -H "Accept: application/json" -H "Content-Type: $content_type" --data-binary "@$payload" "$url"; fi; else if [ -n "$header" ]; then curl -sS -f $insecure_arg --connect-timeout 10 --max-time "$VVP_REQUEST_TIMEOUT" -X "$method" -H "$header" -H "Accept: application/json" "$url"; else curl -sS -f $insecure_arg --connect-timeout 10 --max-time "$VVP_REQUEST_TIMEOUT" -X "$method" -H "Accept: application/json" "$url"; fi; fi; }
 wait_deployment() { name="$1"; expected="$2"; timeout="$3"; start="$(date +%s)"; tmp="${TMPDIR:-/tmp}/vvp-session-job-wait-$name-$$.json"; while :; do if vvp_request GET "${VVP_API_PREFIX%/}/namespaces/$VVP_API_NAMESPACE/deployments/$name" > "$tmp"; then actual="$(python3 - "$tmp" <<'PY'
 import json, sys
@@ -70,6 +72,8 @@ require_file "$payload"
 : "${VVP_REQUEST_TIMEOUT:=${FLINK_REQUEST_TIMEOUT:-60}}"; : "${VVP_DRY_RUN:=${FLINK_DRY_RUN:-false}}"; : "${VVP_API_PREFIX:=/api/v1}"
 VVP_BASE_URL="${VVP_API_BASE_URL:-${VVP_BASE_URL:-${FLINK_BASE_URL:-}}}"; VVP_API_NAMESPACE="${VVP_API_NAMESPACE:-${FLINK_NAMESPACE:-${VVP_NAMESPACE:-default}}}"
 [ -n "$VVP_BASE_URL" ] || fail "VVP_API_BASE_URL, VVP_BASE_URL, or FLINK_BASE_URL is required"
+rendered="${TMPDIR:-/tmp}/vvp-session-job-rendered-$name-$$.yaml"; trap 'rm -f "$rendered"' EXIT HUP INT TERM
+render_manifest "$payload" "$rendered"; payload="$rendered"
 vvp_request PUT "${VVP_API_PREFIX%/}/namespaces/$VVP_API_NAMESPACE/deployments/$name" "$payload" "application/yaml" >/dev/null
 ok "submitted VVP session job deployment payload for $name"
 if [ "$VVP_DRY_RUN" != "true" ] && [ "${VVP_WAIT:-${FLINK_WAIT:-false}}" = "true" ]; then

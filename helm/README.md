@@ -12,7 +12,8 @@ The deployment automation needs these outputs from the Helm installation:
 | --- | --- |
 | Reachable VVP AppManager API URL | `VVP_API_BASE_URL` in scripts and sync service |
 | VVP API namespace | `VVP_API_NAMESPACE` in scripts and sync service |
-| Authentication mode and credentials | `VVP_AUTH_PROVIDER` and provider-specific variables |
+| S3-compatible blob-storage configuration | Artifact, checkpoint and savepoint `s3://` URIs used by deployments |
+| Optional generated VVP API token | `VVP_API_TOKEN` for scripts and the sync service Secret |
 | Kubernetes namespace and service DNS | `services/vvp-gitops-sync/k8s/deployment.yaml` |
 | Image registry and pull credentials | Git sync service image in the Kubernetes workload |
 
@@ -22,3 +23,15 @@ the browser UI URL. The scripts call `/api/v1/namespaces/...` by default. Run
 
 Keep credentials in the platform's secret mechanism. The sample env files and
 Kubernetes manifest contain placeholders and are not production values.
+
+Include the resources under `platform/postgres-bootstrap/` in the VVP Helm
+release when PostgreSQL must be prepared automatically. They run as
+`pre-install` and `pre-upgrade` hooks, create database `vvp` when absent and
+prepare the schema derived from the VVP instance name. The PostgreSQL admin
+Secret must exist before Helm starts. See
+`docs/platform/vvp-postgres-bootstrap.md`.
+
+Configure the VVP universal blob-storage base URI, S3-compatible endpoint,
+region and credentials in the Helm installation. Project definitions should
+reference only `s3://` locations and must not repeat endpoint or credential
+configuration.

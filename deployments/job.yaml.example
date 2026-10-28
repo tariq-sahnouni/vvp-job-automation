@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Deployment
+metadata:
+  name: replace-with-job-name
+  labels:
+    project: replace-with-project-name
+spec:
+  state: RUNNING
+  deploymentTargetName: ${VVP_DEPLOYMENT_TARGET_NAME}
+  template:
+    spec:
+      artifact:
+        kind: JAR
+        jarUri: ${S3_ARTIFACT_URI_PREFIX}/job.jar
+        entryClass: com.example.Job
+        flinkVersion: replace-with-supported-flink-version
+      parallelism: 1
+      flinkConfiguration:
+        state.checkpoints.dir: ${S3_CHECKPOINT_URI_PREFIX}/job-name
+        state.savepoints.dir: ${S3_SAVEPOINT_URI_PREFIX}/job-name

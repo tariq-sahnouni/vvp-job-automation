@@ -40,10 +40,11 @@ services/vvp-gitops-sync/
 
 ## Git Repository Format
 
-Create a repository path such as:
+The template already provides the watched path:
 
 ```text
 deployments/
+  job.yaml.example
   payments-job.yaml
   risk-job.yaml
 ```
@@ -64,12 +65,12 @@ metadata:
   name: simple-java-flink-job
 spec:
   state: RUNNING
-  deploymentTargetName: local-vvp-target
+  deploymentTargetName: ${VVP_DEPLOYMENT_TARGET_NAME}
   template:
     spec:
       artifact:
         kind: JAR
-        jarUri: http://minio.minio.svc.cluster.local:9000/flink-artifacts/simple-java-flink-job/simple-java-flink-job.jar
+        jarUri: ${S3_ARTIFACT_URI_PREFIX}/simple-java-flink-job.jar
         entryClass: com.example.flinkautomation.SimpleFlinkJob
 ```
 
@@ -97,58 +98,71 @@ metadata:
     vvp-gitops-sync/commit: <commit-sha>
 ```
 
-## Required Environment
+## Configuration
+
+In Kubernetes, all non-secret service configuration is stored in
+`k8s/configmap.yaml` under one `config.yaml` key. The pod mounts it read-only at
+`/etc/vvp-gitops-sync/config.yaml` and starts the service with:
 
 ```sh
-export GIT_REPO_URL=https://git.example.com/team/flink-deployments.git
-export GIT_BRANCH=main
-export GIT_PATH=deployments
-
-export VVP_API_BASE_URL=http://vvp-ververica-platform.vvp.svc.cluster.local
-export VVP_API_NAMESPACE=default
-export VVP_AUTH_PROVIDER=none
+python /app/vvp_gitops_sync.py --config /etc/vvp-gitops-sync/config.yaml
 ```
 
-## Important Environment Variables
+The file has four sections:
 
-- `GIT_REPO_URL`: Git repository URL. Required.
-- `GIT_BRANCH`: branch to watch. Default: `main`.
-- `GIT_PATH`: path inside the repository. Default: `deployments`.
-- `GIT_CACHE_DIR`: local clone/cache directory. Default: `/data/repo`.
-- `SYNC_INTERVAL_SECONDS`: polling interval. Default: `60`.
-- `VVP_GITOPS_RUN_ONCE=true`: run one reconciliation and exit.
-- `VVP_GITOPS_DRY_RUN=true`: print VVP API actions without modifying VVP.
-- `VVP_GITOPS_FORCE_SYNC=true`: reconcile even when the commit SHA did not change.
-- `VVP_GITOPS_PRUNE_ENABLED=false`: do not delete removed deployments.
-- `VVP_GITOPS_STATE_FILE`: state file path. Default: sibling of
-  `GIT_CACHE_DIR`, for example `/data/state.json` when `GIT_CACHE_DIR` is
-  `/data/repo`.
-- `VVP_GITOPS_MANAGED_LABEL_KEY`: default `managed-by`.
-- `VVP_GITOPS_MANAGED_LABEL_VALUE`: default `vvp-gitops-sync`.
+| Section | Purpose |
+| --- | --- |
+| `git` | Repository URL, branch, watched path and local cache path |
+| `vvp` | VVP API URL, namespace, prefix, timeout and TLS behavior |
+| `reconciliation` | Polling, state, dry-run, pruning, ownership label and deletion behavior |
+| `inventory` | Values used to expand `${NAME}` placeholders in deployment definitions |
 
-## AuthN
+The default ConfigMap defines only `VVP_DEPLOYMENT_TARGET_NAME`. Add
+`S3_ARTIFACT_URI_PREFIX`, `S3_CHECKPOINT_URI_PREFIX` and
+`S3_SAVEPOINT_URI_PREFIX` under `inventory` only when S3-compatible storage is
+available and an active definition references them.
 
-No-auth:
+Environment variables remain supported for local compatibility and override
+file values, but the Kubernetes workload does not use `envFrom`. Command-line
+arguments override both. An unset inventory variable stops reconciliation and
+leaves the previous desired state untouched.
+
+The service reads the file at startup. `make service-install` restarts the
+Deployment after applying the ConfigMap so changes take effect immediately.
+
+Use standard `s3://bucket/prefix` values. Configure the S3-compatible endpoint,
+region and credentials through VVP platform configuration and approved secrets;
+the sync service does not need object-storage credentials.
+
+## VVP token authentication
+
+The service supports authenticated and unauthenticated VVP API access. When
+`VVP_API_TOKEN` is non-empty, it sends `Authorization: Bearer <token>`. When the
+variable is absent or empty, it sends no authentication header.
+
+For Kubernetes, create `vvp-gitops-sync-vvp-token` from
+`services/vvp-gitops-sync/k8s/vvp-token-secret.example.yaml` only when a token
+is required. The Deployment references this Secret as optional, so the same
+manifest works without it. Do not put the token in the ConfigMap.
+
+Inject or rotate a generated token without writing it to a tracked file:
 
 ```sh
-export VVP_AUTH_PROVIDER=none
+kubectl -n vvp create secret generic vvp-gitops-sync-vvp-token \
+  --from-literal=token="$GENERATED_VVP_TOKEN" \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n vvp rollout restart deployment/vvp-gitops-sync
 ```
 
-Bearer token:
+For access without authentication, omit the Secret or delete it and restart
+the Deployment.
+
+For local execution, pass the token only to the process that needs it:
 
 ```sh
-export VVP_AUTH_PROVIDER=bearer
-export VVP_API_TOKEN=<token>
-```
-
-Keycloak client credentials:
-
-```sh
-export VVP_AUTH_PROVIDER=keycloak
-export KEYCLOAK_BASE_URL=http://keycloak.keycloak.svc.cluster.local:8080
-export KEYCLOAK_REALM=vvp
-export KEYCLOAK_CLIENT_ID=vvp-gitops-sync
-export KEYCLOAK_CLIENT_SECRET=<secret>
+VVP_API_TOKEN="$GENERATED_VVP_TOKEN" \
+  python services/vvp-gitops-sync/app/vvp_gitops_sync.py \
+  --config /tmp/vvp-gitops-sync.yaml --once
 ```
 
 ## Run Locally
@@ -161,30 +175,25 @@ python3 -m venv /tmp/vvp-gitops-sync-venv
 pip install -r services/vvp-gitops-sync/requirements.txt
 ```
 
-Run one dry-run sync:
+Extract the embedded configuration for local use, then edit its URLs and paths:
 
 ```sh
-GIT_REPO_URL=file:///tmp/vvp-gitops-demo-repo \
-GIT_BRANCH=main \
-GIT_PATH=deployments \
-VVP_API_BASE_URL=https://vvp-api.example.internal \
-VVP_API_NAMESPACE=default \
-VVP_AUTH_PROVIDER=none \
-VVP_GITOPS_RUN_ONCE=true \
-VVP_GITOPS_DRY_RUN=true \
-python services/vvp-gitops-sync/app/vvp_gitops_sync.py
+kubectl create --dry-run=client -f services/vvp-gitops-sync/k8s/configmap.yaml \
+  -o jsonpath='{.data.config\.yaml}' > /tmp/vvp-gitops-sync.yaml
+```
+
+Run one dry-run reconciliation:
+
+```sh
+python services/vvp-gitops-sync/app/vvp_gitops_sync.py \
+  --config /tmp/vvp-gitops-sync.yaml --once --dry-run --force
 ```
 
 Run continuously:
 
 ```sh
-GIT_REPO_URL=https://git.example.com/team/flink-deployments.git \
-GIT_BRANCH=main \
-GIT_PATH=deployments \
-VVP_API_BASE_URL=https://vvp-api.example.internal \
-VVP_API_NAMESPACE=default \
-VVP_AUTH_PROVIDER=none \
-python services/vvp-gitops-sync/app/vvp_gitops_sync.py
+python services/vvp-gitops-sync/app/vvp_gitops_sync.py \
+  --config /tmp/vvp-gitops-sync.yaml
 ```
 
 ## Run In Kubernetes
@@ -197,17 +206,22 @@ docker build -t registry.example.com/platform/vvp-gitops-sync:0.1.0 \
 docker push registry.example.com/platform/vvp-gitops-sync:0.1.0
 ```
 
-Edit:
+Edit the non-secret configuration and image:
 
 ```text
+services/vvp-gitops-sync/k8s/configmap.yaml
 services/vvp-gitops-sync/k8s/deployment.yaml
 ```
 
-Set the image, Git repository URL, branch, path, and VVP API URL, then deploy:
+For a private HTTPS Git repository, create the `vvp-gitops-sync-git` Secret
+through the approved secret management process. It provides a read-only
+`.netrc`; credentials never belong in the ConfigMap or repository URL.
+`services/vvp-gitops-sync/k8s/secret.example.yaml` documents the expected
+format. Then deploy:
 
 ```sh
-kubectl apply -f services/vvp-gitops-sync/k8s/deployment.yaml
-kubectl -n vvp logs deploy/vvp-gitops-sync -f
+make service-install NAMESPACE=vvp
+make service-logs NAMESPACE=vvp
 ```
 
 ## Delete Behavior
@@ -240,13 +254,6 @@ Run a dry-run against the VVP installation after replacing the URL and Git
 repository with reachable values:
 
 ```sh
-GIT_REPO_URL=file:///tmp/vvp-gitops-demo-repo \
-GIT_BRANCH=main \
-GIT_PATH=deployments \
-VVP_API_BASE_URL=https://vvp-api.example.internal \
-VVP_API_NAMESPACE=default \
-VVP_AUTH_PROVIDER=none \
-VVP_GITOPS_RUN_ONCE=true \
-VVP_GITOPS_DRY_RUN=true \
-python services/vvp-gitops-sync/app/vvp_gitops_sync.py
+python services/vvp-gitops-sync/app/vvp_gitops_sync.py \
+  --config /tmp/vvp-gitops-sync.yaml --once --dry-run --force
 ```

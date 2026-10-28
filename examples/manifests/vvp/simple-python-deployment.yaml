@@ -4,16 +4,12 @@ metadata:
   name: simple-python-flink-job
 spec:
   state: RUNNING
-  deploymentTargetName: local-vvp-target
+  deploymentTargetName: ${VVP_DEPLOYMENT_TARGET_NAME}
   template:
     spec:
       artifact:
         kind: PYTHON
-        pythonArtifactUri: http://minio.minio.svc.cluster.local:9000/flink-artifacts/simple-python-flink-job/simple_flink_job.py
+        pythonArtifactUri: ${S3_ARTIFACT_URI_PREFIX}/simple_pyflink_job.py
       flinkConfiguration:
-        state.checkpoints.dir: s3://flink-checkpoints/simple-python-flink-job
-        state.savepoints.dir: s3://flink-savepoints/simple-python-flink-job
-        s3.endpoint: http://minio.minio.svc.cluster.local:9000
-        s3.path.style.access: "true"
-        s3.access-key: minioadmin
-        s3.secret-key: minioadmin
+        state.checkpoints.dir: ${S3_CHECKPOINT_URI_PREFIX}/simple-python-flink-job
+        state.savepoints.dir: ${S3_SAVEPOINT_URI_PREFIX}/simple-python-flink-job

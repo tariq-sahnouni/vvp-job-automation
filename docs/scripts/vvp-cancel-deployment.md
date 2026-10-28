@@ -12,7 +12,7 @@ Cancels one VVP Deployment.
 
 - `VVP_API_BASE_URL`, `VVP_BASE_URL`, or `FLINK_BASE_URL`
 - `VVP_API_NAMESPACE` or `FLINK_NAMESPACE`
-- `VVP_AUTH_PROVIDER` or `FLINK_AUTH_PROVIDER`
+- `VVP_API_TOKEN`: optional generated VVP bearer token; leave unset for unauthenticated access
 
 ## Behavior
 

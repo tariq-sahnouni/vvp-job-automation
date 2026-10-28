@@ -1,27 +1,81 @@
-# VVP Marketplace
+# VVP Project Deployment Template
 
-VVP deployment operations and Git reconciliation components for integration with
-the BNP Paribas VVP Helm installation. This directory does not install VVP;
-the existing platform Helm release remains the owner of VVP configuration.
+Use this repository as the starting point for a project team that deploys
+Apache Flink jobs through Ververica Platform (VVP).
 
-## Layout
+It gives the team three ways to work:
 
-| Path | Purpose |
+1. Store the desired VVP job definitions in `deployments/`.
+2. Run the standalone scripts for manual operations and troubleshooting.
+3. Build and run `vvp-gitops-sync` to reconcile `deployments/` with VVP.
+
+The VVP platform itself is installed and configured by the platform Helm
+repository. Each inventory repository points to one VVP installation, API
+namespace and deployment target. It may use multiple VVP session clusters.
+This repository owns project job definitions and their lifecycle.
+
+Artifacts, checkpoints and savepoints use generic `s3://` URIs. The platform
+Helm installation supplies the S3-compatible endpoint and credentials, so job
+definitions remain independent of the storage vendor.
+
+## Repository layout
+
+| Path | Project team responsibility |
 | --- | --- |
-| `helm/` | Integration contract with the platform Helm release |
-| `scripts/` | Self-contained VVP API commands, one action per script |
-| `services/vvp-gitops-sync/` | Git-to-VVP deployment reconciliation service |
-| `docs/` | [Documentation home](docs/README.md) and one usage page per VVP script |
-| `docs/services/` | Git sync setup and behavior |
-| `examples/` | Sample env files and VVP resource definitions; replace demo values before use |
+| `deployments/` | Desired VVP `Deployment` resources watched by the sync service |
+| `platform/` | Deployment target and session cluster definitions applied with scripts |
+| `config/` | Local environment and Kubernetes configuration templates |
+| `scripts/` | Standalone VVP API operations |
+| `services/vvp-gitops-sync/` | Source, container build and Kubernetes resources for automatic deployment |
+| `docs/` | Operating documentation and one page per script |
+| `examples/` | Reference definitions; these are not reconciled automatically |
+| `dist/` | Optional exported service image for environments without a registry |
 
-## Integration order
+## Start a new project
 
-1. Configure and install VVP using the platform Helm release. See [Helm integration](helm/README.md).
-2. Set the VVP API URL, namespace and authentication in an environment file.
-3. Run `scripts/vvp-preflight.sh` and then the needed deployment scripts. See [script index](docs/scripts/README.md).
-4. For continuous reconciliation, build and deploy `services/vvp-gitops-sync/` and point it at a Git path containing VVP `Deployment` definitions. See [service guide](docs/services/vvp-gitops-sync.md).
+1. Create a repository from this template.
+2. Copy `config/vvp.env.example` to `.env` and set the VVP API values.
+3. Run `make preflight` to verify VVP access.
+4. Add deployment targets or session clusters under `platform/` if the platform
+   team does not provide them.
+5. Copy `deployments/job.yaml.example` to `deployments/<job-name>.yaml`, replace
+   every placeholder, review it, and commit it.
+6. Use `make deploy FILE=deployments/<job-name>.yaml` for a manual deployment.
+7. Configure `services/vvp-gitops-sync/k8s/configmap.yaml` and the required
+   Kubernetes Secrets, then run `make service-install` to enable reconciliation.
 
-The scripts and service both call the VVP API. They do not share a library or
-require the Apache Flink scripts. Some copied scripts still accept legacy
-`FLINK_*` environment aliases; prefer the `VVP_*` variables here.
+## Common commands
+
+```sh
+make help
+make validate
+make preflight
+make list
+make deploy FILE=deployments/payments-job.yaml
+make wait NAME=payments-job STATE=RUNNING
+make cancel NAME=payments-job
+make delete NAME=payments-job
+
+make service-test
+make service-build
+make service-export
+make service-install
+make service-logs
+```
+
+The sync service checks the configured Git branch and recursively reads YAML or
+JSON files under `deployments/`. A committed deployment is created or updated
+in VVP. Removing its file causes the service to cancel and delete it from VVP,
+provided it carries the service ownership label.
+
+The finite [PyFlink example](examples/apps/python/simple_pyflink_job.py) and its
+[disabled deployment definition](deployments/examples/simple-python.yaml.example)
+provide a small first deployment. The definition remains inactive until it is
+copied or renamed with a `.yaml` extension.
+
+Read [Getting Started](docs/getting-started.md) before enabling automatic
+pruning. The complete documentation starts at [docs/README.md](docs/README.md).
+
+The optional [PostgreSQL bootstrap Job](docs/platform/vvp-postgres-bootstrap.md)
+creates database `vvp` and an isolated schema for the configured VVP instance
+before the Helm installation or upgrade continues.

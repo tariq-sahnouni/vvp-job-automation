@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: vvp-gitops-sync
-  namespace: vvp
   labels:
     app: vvp-gitops-sync
 spec:
@@ -17,28 +16,37 @@ spec:
     spec:
       containers:
         - name: vvp-gitops-sync
-          image: registry.example.com/platform/vvp-gitops-sync:0.1.0
+          image: registry.example.internal/project/vvp-gitops-sync:0.1.0
           imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/vvp-gitops-sync/config.yaml
           env:
-            - name: GIT_REPO_URL
-              value: https://git.example.com/team/vvp-deployments.git
-            - name: GIT_BRANCH
-              value: main
-            - name: GIT_PATH
-              value: deployments
-            - name: SYNC_INTERVAL_SECONDS
-              value: "60"
-            - name: VVP_API_BASE_URL
-              value: http://vvp-ververica-platform.vvp.svc.cluster.local
-            - name: VVP_API_NAMESPACE
-              value: default
-            - name: VVP_AUTH_PROVIDER
-              value: none
-            - name: VVP_GITOPS_PRUNE_ENABLED
-              value: "true"
+            - name: HOME
+              value: /git-auth
+            - name: VVP_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vvp-gitops-sync-vvp-token
+                  key: token
+                  optional: true
           volumeMounts:
+            - name: config
+              mountPath: /etc/vvp-gitops-sync
+              readOnly: true
+            - name: git-credentials
+              mountPath: /git-auth
+              readOnly: true
             - name: data
               mountPath: /data
       volumes:
+        - name: config
+          configMap:
+            name: vvp-gitops-sync
+        - name: git-credentials
+          secret:
+            secretName: vvp-gitops-sync-git
+            optional: true
+            defaultMode: 0400
         - name: data
           emptyDir: {}

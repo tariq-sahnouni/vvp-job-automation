@@ -13,7 +13,8 @@ Creates or updates one VVP SessionCluster.
 
 - `VVP_API_BASE_URL`, `VVP_BASE_URL`, or `FLINK_BASE_URL`
 - `VVP_API_NAMESPACE` or `FLINK_NAMESPACE`
-- `VVP_AUTH_PROVIDER` or `FLINK_AUTH_PROVIDER`
+- `VVP_API_TOKEN`: optional generated VVP bearer token; leave unset for unauthenticated access
+- `${NAME}` values in the manifest are expanded from exported environment variables
 
 ## Behavior
 

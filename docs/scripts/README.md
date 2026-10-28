@@ -6,6 +6,7 @@ this directory. Run all commands from this directory.
 
 | Script | Documentation |
 | --- | --- |
+| `vvp-validate-inventory.sh` | [Validate inventory](vvp-validate-inventory.md) |
 | `vvp-preflight.sh` | [Preflight](vvp-preflight.md) |
 | `vvp-upsert-deployment-target.sh` | [Upsert deployment target](vvp-upsert-deployment-target.md) |
 | `vvp-upsert-session-cluster.sh` | [Upsert session cluster](vvp-upsert-session-cluster.md) |
@@ -20,6 +21,7 @@ this directory. Run all commands from this directory.
 | `vvp-cancel-deployment.sh` | [Cancel deployment](vvp-cancel-deployment.md) |
 | `vvp-delete-deployment.sh` | [Delete deployment](vvp-delete-deployment.md) |
 
-Start with `examples/env/vvp-application.env.example` and one of the
-`examples/env/auth-*.env.example` files. The example manifests reference demo
-targets and artifacts, so update them for the installed environment.
+Start with `examples/env/bnpp-vvp.env.example`. Pass `VVP_API_TOKEN` to a
+command when the VVP API requires a generated token; otherwise leave it unset.
+The example manifests reference placeholder targets and artifacts, so update
+them for the installed environment.

@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vvp-postgres-bootstrap-script
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  bootstrap.sh: |
+    #!/bin/sh
+    set -eu
+
+    DATABASE="vvp"
+
+    log() { printf '[%s] %s\n' "$1" "$2"; }
+    fail() { log ERROR "$1" >&2; exit 1; }
+
+    : "${POSTGRES_HOST:?POSTGRES_HOST is required}"
+    : "${POSTGRES_PORT:?POSTGRES_PORT is required}"
+    : "${POSTGRES_MAINTENANCE_DATABASE:?POSTGRES_MAINTENANCE_DATABASE is required}"
+    : "${POSTGRES_ADMIN_USER:?POSTGRES_ADMIN_USER is required}"
+    : "${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD is required}"
+    : "${VVP_NAME:?VVP_NAME is required}"
+    : "${VVP_POSTGRES_ROLE:?VVP_POSTGRES_ROLE is required}"
+
+    POSTGRES_SSLMODE="${POSTGRES_SSLMODE:-require}"
+    POSTGRES_CONNECT_RETRIES="${POSTGRES_CONNECT_RETRIES:-30}"
+    POSTGRES_CONNECT_RETRY_SECONDS="${POSTGRES_CONNECT_RETRY_SECONDS:-5}"
+
+    case "$POSTGRES_PORT:$POSTGRES_CONNECT_RETRIES:$POSTGRES_CONNECT_RETRY_SECONDS" in
+      *[!0-9:]*) fail "PostgreSQL port and retry settings must be numeric" ;;
+    esac
+
+    SCHEMA_NAME="$(printf '%s' "$VVP_NAME" |
+      tr '[:upper:]' '[:lower:]' |
+      sed -E 's/[^a-z0-9_]+/_/g; s/_+/_/g; s/^_+//; s/_+$//')"
+
+    [ -n "$SCHEMA_NAME" ] || fail "VVP_NAME produces an empty schema name"
+    case "$SCHEMA_NAME" in
+      [a-z_]*) ;;
+      *) fail "Normalized schema name must start with a letter or underscore: $SCHEMA_NAME" ;;
+    esac
+    [ "${#SCHEMA_NAME}" -le 63 ] || fail "Normalized schema name exceeds 63 characters: $SCHEMA_NAME"
+
+    export PGPASSWORD="$POSTGRES_ADMIN_PASSWORD"
+    export PGSSLMODE="$POSTGRES_SSLMODE"
+
+    psql_admin() {
+      database="$1"
+      shift
+      psql -X -v ON_ERROR_STOP=1 \
+        -h "$POSTGRES_HOST" \
+        -p "$POSTGRES_PORT" \
+        -U "$POSTGRES_ADMIN_USER" \
+        -d "$database" "$@"
+    }
+
+    log INFO "VVP instance: $VVP_NAME"
+    log INFO "PostgreSQL database: $DATABASE"
+    log INFO "PostgreSQL schema: $SCHEMA_NAME"
+    log INFO "VVP runtime role: $VVP_POSTGRES_ROLE"
+
+    attempt=1
+    while ! psql_admin "$POSTGRES_MAINTENANCE_DATABASE" -q -c 'SELECT 1' >/dev/null 2>&1; do
+      if [ "$attempt" -ge "$POSTGRES_CONNECT_RETRIES" ]; then
+        fail "Could not connect to PostgreSQL after $POSTGRES_CONNECT_RETRIES attempts; check endpoint, TLS, network policy and admin credentials"
+      fi
+      log INFO "PostgreSQL is not ready; retry $attempt/$POSTGRES_CONNECT_RETRIES"
+      attempt=$((attempt + 1))
+      sleep "$POSTGRES_CONNECT_RETRY_SECONDS"
+    done
+    log INFO "Connected to PostgreSQL"
+
+    role_exists="$(psql_admin "$POSTGRES_MAINTENANCE_DATABASE" -qAt \
+      -v vvp_role="$VVP_POSTGRES_ROLE" <<'SQL'
+    SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'vvp_role');
+    SQL
+    )"
+    [ "$role_exists" = "t" ] || fail "VVP runtime role '$VVP_POSTGRES_ROLE' does not exist; provision it through the approved identity-management process"
+
+    log INFO "Creating database '$DATABASE' when absent"
+    psql_admin "$POSTGRES_MAINTENANCE_DATABASE" -q \
+      -v database="$DATABASE" -v vvp_role="$VVP_POSTGRES_ROLE" <<'SQL'
+    SELECT pg_advisory_lock(hashtext('vvp-postgres-bootstrap-database'));
+    SELECT format('CREATE DATABASE %I OWNER %I', :'database', :'vvp_role')
+    WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'database')
+    \gexec
+    SELECT pg_advisory_unlock(hashtext('vvp-postgres-bootstrap-database'));
+    SQL
+
+    database_exists="$(psql_admin "$POSTGRES_MAINTENANCE_DATABASE" -qAt \
+      -v database="$DATABASE" <<'SQL'
+    SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'database');
+    SQL
+    )"
+    [ "$database_exists" = "t" ] || fail "Database '$DATABASE' was not created"
+
+    log INFO "Creating schema '$SCHEMA_NAME' and applying runtime-role privileges"
+    psql_admin "$DATABASE" -q \
+      -v database="$DATABASE" -v schema="$SCHEMA_NAME" -v vvp_role="$VVP_POSTGRES_ROLE" <<'SQL'
+    SELECT format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I', :'schema', :'vvp_role')
+    \gexec
+
+    SELECT format('ALTER SCHEMA %I OWNER TO %I', :'schema', :'vvp_role')
+    WHERE EXISTS (
+      SELECT 1
+      FROM pg_namespace n
+      JOIN pg_roles r ON r.oid = n.nspowner
+      WHERE n.nspname = :'schema' AND r.rolname <> :'vvp_role'
+    )
+    \gexec
+
+    SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'database', :'vvp_role')
+    \gexec
+    SELECT format('GRANT USAGE, CREATE ON SCHEMA %I TO %I', :'schema', :'vvp_role')
+    \gexec
+    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', :'vvp_role', :'schema', :'vvp_role')
+    \gexec
+    SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO %I', :'vvp_role', :'schema', :'vvp_role')
+    \gexec
+    SELECT format('ALTER ROLE %I IN DATABASE %I SET search_path = %I, public', :'vvp_role', :'database', :'schema')
+    \gexec
+    SQL
+
+    if psql_admin "$DATABASE" -q \
+      -v schema="$SCHEMA_NAME" -v vvp_role="$VVP_POSTGRES_ROLE" >/dev/null 2>&1 <<'SQL'
+    SET ROLE :"vvp_role";
+    SET search_path TO :"schema", public;
+    DROP TABLE IF EXISTS :"schema".__vvp_smoke_test;
+    CREATE TABLE :"schema".__vvp_smoke_test (
+      id integer GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+      value text NOT NULL
+    );
+    INSERT INTO :"schema".__vvp_smoke_test (value) VALUES ('bootstrap smoke test');
+    UPDATE :"schema".__vvp_smoke_test SET value = 'bootstrap smoke test updated';
+    DELETE FROM :"schema".__vvp_smoke_test;
+    DROP TABLE :"schema".__vvp_smoke_test;
+    RESET ROLE;
+    SQL
+    then
+      log INFO "Runtime-role smoke test passed"
+    else
+      log WARN "Schema was prepared, but the admin role could not complete SET ROLE smoke testing"
+    fi
+
+    log OK "PostgreSQL bootstrap complete: database=$DATABASE schema=$SCHEMA_NAME role=$VVP_POSTGRES_ROLE"

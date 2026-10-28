@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vvp-gitops-sync
+data:
+  config.yaml: |
+    git:
+      repoUrl: https://git.example.internal/project/vvp-deployments.git
+      branch: main
+      path: deployments
+      cacheDir: /data/repo
+
+    vvp:
+      apiBaseUrl: https://vvp-api.example.internal
+      apiNamespace: project-namespace
+      apiPrefix: /api/v1
+      requestTimeoutSeconds: 60
+      insecureTls: false
+
+    reconciliation:
+      intervalSeconds: 60
+      stateFile: /data/state.json
+      runOnce: false
+      dryRun: false
+      forceSync: false
+      pruneEnabled: false
+      managedLabel:
+        key: managed-by
+        value: vvp-gitops-sync
+      delete:
+        stopFirst: true
+        stopState: CANCELLED
+        retryAttempts: 12
+        retrySeconds: 5
+
+    inventory:
+      VVP_DEPLOYMENT_TARGET_NAME: project-target
+      # Add S3 URI prefixes here only when S3-compatible storage is available.

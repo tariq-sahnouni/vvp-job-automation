@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import ssl
 import subprocess
 import sys
@@ -30,6 +31,35 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def load_config_file(path: str | None) -> dict[str, Any]:
+    if not path:
+        return {}
+    config_path = Path(path)
+    if not config_path.is_file():
+        raise SystemExit(f"[ERROR] configuration file is not readable: {config_path}")
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise SystemExit(f"[ERROR] configuration file must contain a YAML object: {config_path}")
+    return data
+
+
+def nested(data: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    current: Any = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return default
+        current = current[key]
+    return current
 
 
 def run(command: list[str], cwd: Path | None = None) -> str:
@@ -66,49 +96,64 @@ class Config:
     vvp_api_prefix: str
     vvp_request_timeout: int
     vvp_insecure_tls: bool
+    vvp_api_token: str | None
     delete_stop_first: bool
     delete_stop_state: str
     delete_retry_attempts: int
     delete_retry_seconds: int
+    inventory_variables: dict[str, str]
 
     @classmethod
     def from_env(cls, args: argparse.Namespace) -> "Config":
-        repo_url = args.repo_url or os.environ.get("GIT_REPO_URL", "")
+        config_path = args.config or os.environ.get("VVP_GITOPS_CONFIG")
+        file_config = load_config_file(config_path)
+
+        def value(env_name: str, *path: str, default: Any = None) -> Any:
+            return os.environ.get(env_name, nested(file_config, *path, default=default))
+
+        repo_url = args.repo_url or value("GIT_REPO_URL", "git", "repoUrl", default="")
         base_url = (
             args.vvp_base_url
             or os.environ.get("VVP_API_BASE_URL")
             or os.environ.get("VVP_BASE_URL")
             or os.environ.get("FLINK_BASE_URL")
+            or nested(file_config, "vvp", "apiBaseUrl", default="")
             or ""
         )
         if not repo_url:
-            raise SystemExit("[ERROR] GIT_REPO_URL is required")
+            raise SystemExit("[ERROR] git.repoUrl is required in the configuration file")
         if not base_url:
-            raise SystemExit("[ERROR] VVP_API_BASE_URL, VVP_BASE_URL, or FLINK_BASE_URL is required")
-        cache_dir = Path(os.environ.get("GIT_CACHE_DIR", "/data/repo"))
-        state_file = Path(os.environ.get("VVP_GITOPS_STATE_FILE", str(cache_dir.parent / "state.json")))
+            raise SystemExit("[ERROR] vvp.apiBaseUrl is required in the configuration file")
+        cache_dir = Path(value("GIT_CACHE_DIR", "git", "cacheDir", default="/data/repo"))
+        configured_state_file = value("VVP_GITOPS_STATE_FILE", "reconciliation", "stateFile")
+        state_file = Path(configured_state_file or cache_dir.parent / "state.json")
+        inventory = nested(file_config, "inventory", default={})
+        if not isinstance(inventory, dict):
+            raise SystemExit("[ERROR] inventory configuration must be a YAML object")
         return cls(
             git_repo_url=repo_url,
-            git_branch=args.branch or os.environ.get("GIT_BRANCH", "main"),
-            git_path=args.path or os.environ.get("GIT_PATH", "deployments"),
+            git_branch=args.branch or value("GIT_BRANCH", "git", "branch", default="main"),
+            git_path=args.path or value("GIT_PATH", "git", "path", default="deployments"),
             git_cache_dir=cache_dir,
             state_file=state_file,
-            sync_interval_seconds=int(os.environ.get("SYNC_INTERVAL_SECONDS", "60")),
-            run_once=args.once or env_bool("VVP_GITOPS_RUN_ONCE", False),
-            dry_run=args.dry_run or env_bool("VVP_GITOPS_DRY_RUN", env_bool("VVP_DRY_RUN", False)),
-            force_sync=args.force or env_bool("VVP_GITOPS_FORCE_SYNC", False),
-            prune_enabled=env_bool("VVP_GITOPS_PRUNE_ENABLED", True),
-            managed_label_key=os.environ.get("VVP_GITOPS_MANAGED_LABEL_KEY", "managed-by"),
-            managed_label_value=os.environ.get("VVP_GITOPS_MANAGED_LABEL_VALUE", "vvp-gitops-sync"),
+            sync_interval_seconds=int(value("SYNC_INTERVAL_SECONDS", "reconciliation", "intervalSeconds", default=60)),
+            run_once=args.once or as_bool(value("VVP_GITOPS_RUN_ONCE", "reconciliation", "runOnce", default=False)),
+            dry_run=args.dry_run or as_bool(value("VVP_GITOPS_DRY_RUN", "reconciliation", "dryRun", default=env_bool("VVP_DRY_RUN", False))),
+            force_sync=args.force or as_bool(value("VVP_GITOPS_FORCE_SYNC", "reconciliation", "forceSync", default=False)),
+            prune_enabled=as_bool(value("VVP_GITOPS_PRUNE_ENABLED", "reconciliation", "pruneEnabled", default=True)),
+            managed_label_key=value("VVP_GITOPS_MANAGED_LABEL_KEY", "reconciliation", "managedLabel", "key", default="managed-by"),
+            managed_label_value=value("VVP_GITOPS_MANAGED_LABEL_VALUE", "reconciliation", "managedLabel", "value", default="vvp-gitops-sync"),
             vvp_base_url=base_url.rstrip("/"),
-            vvp_api_namespace=os.environ.get("VVP_API_NAMESPACE") or os.environ.get("FLINK_NAMESPACE") or os.environ.get("VVP_NAMESPACE", "default"),
-            vvp_api_prefix=os.environ.get("VVP_API_PREFIX", "/api/v1").rstrip("/"),
-            vvp_request_timeout=int(os.environ.get("VVP_REQUEST_TIMEOUT", os.environ.get("FLINK_REQUEST_TIMEOUT", "60"))),
-            vvp_insecure_tls=env_bool("VVP_INSECURE_TLS", env_bool("FLINK_INSECURE_TLS", False)),
-            delete_stop_first=env_bool("VVP_GITOPS_DELETE_STOP_FIRST", True),
-            delete_stop_state=os.environ.get("VVP_GITOPS_DELETE_STOP_STATE", "CANCELLED"),
-            delete_retry_attempts=int(os.environ.get("VVP_GITOPS_DELETE_RETRY_ATTEMPTS", "12")),
-            delete_retry_seconds=int(os.environ.get("VVP_GITOPS_DELETE_RETRY_SECONDS", "5")),
+            vvp_api_namespace=os.environ.get("VVP_API_NAMESPACE") or os.environ.get("FLINK_NAMESPACE") or os.environ.get("VVP_NAMESPACE") or nested(file_config, "vvp", "apiNamespace", default="default"),
+            vvp_api_prefix=value("VVP_API_PREFIX", "vvp", "apiPrefix", default="/api/v1").rstrip("/"),
+            vvp_request_timeout=int(value("VVP_REQUEST_TIMEOUT", "vvp", "requestTimeoutSeconds", default=os.environ.get("FLINK_REQUEST_TIMEOUT", "60"))),
+            vvp_insecure_tls=as_bool(value("VVP_INSECURE_TLS", "vvp", "insecureTls", default=env_bool("FLINK_INSECURE_TLS", False))),
+            vvp_api_token=os.environ.get("VVP_API_TOKEN", "").strip() or None,
+            delete_stop_first=as_bool(value("VVP_GITOPS_DELETE_STOP_FIRST", "reconciliation", "delete", "stopFirst", default=True)),
+            delete_stop_state=value("VVP_GITOPS_DELETE_STOP_STATE", "reconciliation", "delete", "stopState", default="CANCELLED"),
+            delete_retry_attempts=int(value("VVP_GITOPS_DELETE_RETRY_ATTEMPTS", "reconciliation", "delete", "retryAttempts", default=12)),
+            delete_retry_seconds=int(value("VVP_GITOPS_DELETE_RETRY_SECONDS", "reconciliation", "delete", "retrySeconds", default=5)),
+            inventory_variables={str(key): str(item) for key, item in inventory.items()},
         )
 
 
@@ -165,6 +210,18 @@ def deployment_name(document: dict[str, Any], source: Path) -> str:
     return name
 
 
+def expand_inventory_variables(text: str, source: Path, config: Config) -> str:
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in os.environ:
+            return os.environ[name]
+        if name in config.inventory_variables:
+            return config.inventory_variables[name]
+        raise ValueError(f"{source} references unset inventory variable {name}")
+
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", replace, text)
+
+
 def annotate_deployment(
     document: dict[str, Any],
     *,
@@ -197,8 +254,8 @@ def load_desired_deployments(repo_root: Path, config: Config, commit_sha: str) -
     for path in sorted(desired_root.rglob("*")):
         if path.suffix.lower() not in {".yaml", ".yml", ".json"}:
             continue
-        with path.open("r", encoding="utf-8") as handle:
-            documents = list(yaml.safe_load_all(handle))
+        rendered_text = expand_inventory_variables(path.read_text(encoding="utf-8"), path, config)
+        documents = list(yaml.safe_load_all(rendered_text))
         for document in documents:
             if not document:
                 continue
@@ -223,56 +280,13 @@ class VvpClient:
             return None
         return ssl._create_unverified_context()
 
-    def _auth_header(self) -> dict[str, str]:
-        provider = os.environ.get("VVP_AUTH_PROVIDER", os.environ.get("FLINK_AUTH_PROVIDER", "none")).strip().lower().replace("_", "-")
-        if provider in {"none", "no-auth", "disabled", "false"}:
-            return {}
-        if provider in {"bearer", "token", "static-bearer"}:
-            token = os.environ.get("VVP_API_TOKEN") or os.environ.get("FLINK_API_TOKEN") or os.environ.get("AUTH_ACCESS_TOKEN")
-            if not token:
-                raise RuntimeError("VVP_API_TOKEN, FLINK_API_TOKEN, or AUTH_ACCESS_TOKEN is required")
-            return {"Authorization": f"Bearer {token}"}
-        if provider in {"keycloak", "keycloak-client-credentials", "oidc-keycloak"}:
-            return {"Authorization": f"Bearer {self._keycloak_token()}"}
-        literal_header = os.environ.get("VVP_AUTH_HEADER")
-        if provider in {"custom", "header"} and literal_header:
-            key, _, value = literal_header.partition(":")
-            if not key or not value:
-                raise RuntimeError("VVP_AUTH_HEADER must look like 'Header-Name: value'")
-            return {key.strip(): value.strip()}
-        raise RuntimeError(f"unsupported VVP_AUTH_PROVIDER: {provider}")
-
-    def _keycloak_token(self) -> str:
-        token_url = os.environ.get("KEYCLOAK_TOKEN_URL")
-        if not token_url:
-            base_url = os.environ.get("KEYCLOAK_BASE_URL", "").rstrip("/")
-            realm = os.environ.get("KEYCLOAK_REALM", "")
-            if not base_url or not realm:
-                raise RuntimeError("KEYCLOAK_TOKEN_URL or KEYCLOAK_BASE_URL plus KEYCLOAK_REALM is required")
-            token_url = f"{base_url}/realms/{realm}/protocol/openid-connect/token"
-        client_id = os.environ.get("KEYCLOAK_CLIENT_ID")
-        client_secret = os.environ.get("KEYCLOAK_CLIENT_SECRET")
-        if not client_id or not client_secret:
-            raise RuntimeError("KEYCLOAK_CLIENT_ID and KEYCLOAK_CLIENT_SECRET are required")
-        payload = {
-            "grant_type": os.environ.get("KEYCLOAK_GRANT_TYPE", "client_credentials"),
-            "client_id": client_id,
-            "client_secret": client_secret,
-        }
-        if os.environ.get("KEYCLOAK_SCOPE"):
-            payload["scope"] = os.environ["KEYCLOAK_SCOPE"]
-        request = urllib.request.Request(
-            token_url,
-            data=urllib.parse.urlencode(payload).encode("utf-8"),
-            headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.config.vvp_request_timeout, context=self._ssl_context()) as response:
-            body = json.loads(response.read().decode("utf-8"))
-        token = body.get("access_token")
-        if not token:
-            raise RuntimeError("Keycloak response did not include access_token")
-        return token
+    def _headers(self, content_type: str | None = None) -> dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if self.config.vvp_api_token:
+            headers["Authorization"] = f"Bearer {self.config.vvp_api_token}"
+        if content_type:
+            headers["Content-Type"] = content_type
+        return headers
 
     def request(self, method: str, path: str, body: str | None = None, content_type: str = "application/json") -> Any:
         url = f"{self.config.vvp_base_url}{path}"
@@ -281,12 +295,10 @@ class VvpClient:
             if body:
                 log("INFO", f"DRY RUN payload bytes: {len(body.encode('utf-8'))}")
             return {"items": []} if method == "GET" else {}
-        headers = {"Accept": "application/json"}
-        headers.update(self._auth_header())
         data = None
         if body is not None:
             data = body.encode("utf-8")
-            headers["Content-Type"] = content_type
+        headers = self._headers(content_type if body is not None else None)
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self.config.vvp_request_timeout, context=self._ssl_context()) as response:
@@ -397,6 +409,7 @@ def sync_once(config: Config) -> bool:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Synchronize VVP deployments from a Git repository.")
+    parser.add_argument("--config", help="YAML configuration file mounted from a ConfigMap")
     parser.add_argument("--once", action="store_true", help="run one sync check and exit")
     parser.add_argument("--dry-run", action="store_true", help="print VVP API actions without changing VVP")
     parser.add_argument("--force", action="store_true", help="sync even when the Git SHA did not change")

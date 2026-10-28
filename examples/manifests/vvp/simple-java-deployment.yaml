@@ -4,12 +4,12 @@ metadata:
   name: simple-java-flink-job
 spec:
   state: RUNNING
-  deploymentTargetName: local-vvp-target
+  deploymentTargetName: ${VVP_DEPLOYMENT_TARGET_NAME}
   template:
     spec:
       artifact:
         kind: JAR
-        jarUri: http://minio.minio.svc.cluster.local:9000/flink-artifacts/simple-java-flink-job/simple-java-flink-job.jar
+        jarUri: ${S3_ARTIFACT_URI_PREFIX}/simple-java-flink-job.jar
         entryClass: com.example.flinkautomation.SimpleFlinkJob
         flinkVersion: 1.20.1
         flinkImageRegistry: docker.io
@@ -29,12 +29,8 @@ spec:
         taskmanager.memory.process.size: 1000m
         pekko.startup-timeout: 120s
         akka.startup-timeout: 120s
-        state.checkpoints.dir: s3://flink-checkpoints/simple-java-flink-job
-        state.savepoints.dir: s3://flink-savepoints/simple-java-flink-job
-        s3.endpoint: http://minio.minio.svc.cluster.local:9000
-        s3.path.style.access: "true"
-        s3.access-key: minioadmin
-        s3.secret-key: minioadmin
+        state.checkpoints.dir: ${S3_CHECKPOINT_URI_PREFIX}/simple-java-flink-job
+        state.savepoints.dir: ${S3_SAVEPOINT_URI_PREFIX}/simple-java-flink-job
       kubernetes:
         jobManagerPodTemplate:
           spec:

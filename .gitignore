@@ -3,3 +3,4 @@
 __pycache__/
 *.pyc
 .venv/
+dist/vvp-gitops-sync-image.tar.gz

@@ -12,7 +12,7 @@ Waits until one VVP SessionCluster reaches an expected state.
 
 - `VVP_API_BASE_URL`, `VVP_BASE_URL`, or `FLINK_BASE_URL`
 - `VVP_API_NAMESPACE` or `FLINK_NAMESPACE`
-- `VVP_AUTH_PROVIDER` or `FLINK_AUTH_PROVIDER`
+- `VVP_API_TOKEN`: optional generated VVP bearer token; leave unset for unauthenticated access
 - `VVP_POLL_SECONDS` or `FLINK_POLL_SECONDS`, default `10`
 
 ## Behavior

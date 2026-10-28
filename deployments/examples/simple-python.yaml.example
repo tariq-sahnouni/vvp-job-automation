@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Deployment
+metadata:
+  name: simple-python-example
+  labels:
+    project: vvp-template
+spec:
+  state: RUNNING
+  deploymentTargetName: ${VVP_DEPLOYMENT_TARGET_NAME}
+  template:
+    spec:
+      artifact:
+        kind: PYTHON
+        pythonArtifactUri: ${S3_ARTIFACT_URI_PREFIX}/simple_pyflink_job.py
+      parallelism: 1
+      flinkConfiguration:
+        execution.runtime-mode: BATCH
+        state.checkpoints.dir: ${S3_CHECKPOINT_URI_PREFIX}/simple-python-example
+        state.savepoints.dir: ${S3_SAVEPOINT_URI_PREFIX}/simple-python-example

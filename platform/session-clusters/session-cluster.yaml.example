@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: SessionCluster
+metadata:
+  name: replace-with-session-cluster-name
+spec:
+  state: RUNNING
+  deploymentTargetName: ${VVP_DEPLOYMENT_TARGET_NAME}
+  flinkVersion: replace-with-supported-flink-version
+  numberOfTaskManagers: 1
+  resources:
+    jobmanager:
+      cpu: 0.5
+      memory: 1g
+    taskmanager:
+      cpu: 1
+      memory: 2g
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "2"
